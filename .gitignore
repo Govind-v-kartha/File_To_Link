@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Model weights (too large for GitHub, download separately)
+*.pth
+*.pt
+*.h5
+*.onnx
+
+# Output files (generated at runtime)
+output/encrypted/
+output/decrypted/
+output/metadata/
+output/analysis/
+
+# Logs
+logs/
+*.log
+full_run.log
+
+# Input images (add your own)
+input/
+
+# External repositories (cloned at setup)
+repos/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
