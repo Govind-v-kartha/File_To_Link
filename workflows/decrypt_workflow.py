@@ -157,7 +157,7 @@ def run_decryption(
     # ─────────────────────────────────────────────────────────────────
     logger.info("\n>>> STEP 5: Reconstructing full image...")
 
-    # Start with decrypted background
+    # Start with decrypted background (full image with ROI pixels zeroed)
     reconstructed_image = decrypted_background.copy()
 
     # For lossless reconstruction, use the original RGB blocks saved during encryption.
@@ -179,7 +179,10 @@ def run_decryption(
         reconstruction_blocks, block_map, roi_bbox, original_shape
     )
 
-    # Place ROI onto image
+    # Place ROI onto image — ONLY at ROI mask pixels, not the entire bbox.
+    # The bbox may contain background pixels that were already correctly
+    # decrypted in the background image; overwriting the full bbox would
+    # destroy those pixels with zeros from the roi_region canvas.
     y_min, x_min, y_max, x_max = int(roi_bbox[0]), int(roi_bbox[1]), int(roi_bbox[2]), int(roi_bbox[3])
 
     if roi_region.ndim == 2:
@@ -187,7 +190,17 @@ def run_decryption(
     else:
         roi_region_3ch = roi_region
 
-    reconstructed_image[y_min:y_max, x_min:x_max] = roi_region_3ch
+    # Extract the ROI mask patch for the bounding box area
+    roi_mask_patch = roi_mask[y_min:y_max, x_min:x_max]
+
+    # Only overwrite pixels that are actually ROI
+    roi_pixels = roi_mask_patch > 0
+    if roi_pixels.ndim == 2 and roi_region_3ch.ndim == 3:
+        roi_pixels_3d = np.stack([roi_pixels] * roi_region_3ch.shape[2], axis=-1)
+    else:
+        roi_pixels_3d = roi_pixels
+
+    reconstructed_image[y_min:y_max, x_min:x_max][roi_pixels_3d] = roi_region_3ch[roi_pixels_3d]
 
     logger.info(f"Image reconstructed: {reconstructed_image.shape}")
 
