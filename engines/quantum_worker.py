@@ -119,7 +119,7 @@ def encrypt_block_worker(args):
     try:
         modules = _ensure_modules(repo_path)
 
-        block_size = 8
+        block_size = 32
         encode_neqr = modules["encode_neqr"]
         reconstruct_neqr_image = modules["reconstruct_neqr_image"]
         q_scramble = modules["quantum_scramble"]
@@ -183,7 +183,7 @@ def decrypt_block_worker(args):
     try:
         modules = _ensure_modules(repo_path)
 
-        block_size = 8
+        block_size = 32
         encode_neqr = modules["encode_neqr"]
         reconstruct_neqr_image = modules["reconstruct_neqr_image"]
         reverse_q_scrambling = modules["reverse_quantum_scrambling"]

@@ -214,11 +214,11 @@ def encrypt_block_quantum(
 
     Returns:
         Tuple of:
-            - encrypted_block: Encrypted 8x8 block (uint8).
+            - encrypted_block: Encrypted 32x32 block (uint8).
             - encryption_info: Dict with encryption details for this block.
     """
     start_time = time.time()
-    block_size = 8
+    block_size = 32
 
     # Extract functions from modules
     encode_neqr = modules["encode_neqr"]
@@ -324,10 +324,10 @@ def decrypt_block_quantum(
         shots: Number of measurement shots.
 
     Returns:
-        Decrypted 8x8 block (uint8).
+        Decrypted 32x32 block (uint8).
     """
     start_time = time.time()
-    block_size = 8
+    block_size = 32
 
     # Extract functions
     encode_neqr = modules["encode_neqr"]

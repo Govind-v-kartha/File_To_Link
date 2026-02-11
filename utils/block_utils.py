@@ -1,5 +1,5 @@
 """
-Block utilities for 8x8 pixel block division and reconstruction.
+Block utilities for 32x32 pixel block division and reconstruction.
 Handles ROI blocking, padding, block mapping, and reconstruction.
 """
 
@@ -10,17 +10,17 @@ from utils.logger import setup_logger, get_config_path
 
 logger = setup_logger("BLOCK_UTILS", get_config_path())
 
-BLOCK_SIZE = 8
+BLOCK_SIZE = 32
 
 
 def create_roi_blocks(
     image: np.ndarray, roi_mask: np.ndarray
 ) -> Tuple[List[np.ndarray], List[dict], np.ndarray]:
     """
-    Divide the ROI region of an image into 8x8 blocks for quantum encryption.
+    Divide the ROI region of an image into 32x32 blocks for quantum encryption.
 
     This function extracts the bounding box of the ROI, then divides it into
-    8x8 blocks in raster order. Partial blocks at the edges are zero-padded
+    32x32 blocks in raster order. Partial blocks at the edges are zero-padded
     and padding information is stored for perfect reconstruction.
 
     Args:

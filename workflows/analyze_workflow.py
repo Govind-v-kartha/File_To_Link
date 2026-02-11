@@ -74,7 +74,7 @@ def run_analysis(
 
     # Estimate encryption time
     shots = config.get("quantum_encryption", {}).get("shots", 1024)
-    est_time_per_block = 1.5  # seconds (typical for NEQR on 8x8)
+    est_time_per_block = 25.0  # seconds (typical for NEQR on 32x32)
     est_total_time = block_stats["total_blocks"] * est_time_per_block
 
     elapsed = time.time() - start_time

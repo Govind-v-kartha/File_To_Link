@@ -17,7 +17,7 @@ Input Image
          │        │
          ▼        ▼
 ┌────────────┐  ┌──────────────┐
-│ 8×8 Block  │  │ AES-256-GCM  │
+│ 32×32 Block │  │ AES-256-GCM  │
 │ Division   │  │ Classical     │
 └─────┬──────┘  │ Encryption   │
       │         └──────┬───────┘
@@ -101,7 +101,7 @@ quantum-image-encryption/
 │   └── verify_workflow.py      # Verification only
 ├── utils/
 │   ├── image_utils.py          # Image operations
-│   ├── block_utils.py          # 8×8 blocking
+│   ├── block_utils.py          # 32×32 blocking
 │   ├── crypto_utils.py         # Key generation
 │   └── logger.py               # Logging
 ├── repos/                      # External repositories
@@ -126,7 +126,7 @@ quantum-image-encryption/
 ### Repository B: Quantum Image Encryption
 - **URL**: https://github.com/ManavMNair/Quantum-image-encryption
 - **Purpose**: NEQR quantum encoding + scrambling + DNA encryption
-- **Usage**: Encrypts each 8×8 ROI block using quantum circuits
+- **Usage**: Encrypts each 32×32 ROI block using quantum circuits
 
 ## Zero Data Loss Policy
 

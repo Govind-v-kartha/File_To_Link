@@ -4,7 +4,7 @@ Encryption Workflow - End-to-End Encryption Pipeline.
 Orchestrates the complete encryption pipeline:
 1. Load and validate input image
 2. FlexiMo AI segmentation (ROI/Background separation)
-3. ROI block division (8x8 blocks)
+3. ROI block division (32x32 blocks)
 4. Quantum encryption of ROI blocks (NEQR via Repo B)
 5. Classical encryption of background (AES-256-GCM)
 6. Fusion of encrypted components
@@ -127,9 +127,9 @@ def run_encryption(
     seg_raw = None  # keep variable alive but free the data
 
     # ─────────────────────────────────────────────────────────────────
-    # STEP 3: ROI Block Division (8x8 blocks)
+    # STEP 3: ROI Block Division (32x32 blocks)
     # ─────────────────────────────────────────────────────────────────
-    logger.info("\n>>> STEP 3: Dividing ROI into 8x8 blocks...")
+    logger.info("\n>>> STEP 3: Dividing ROI into 32x32 blocks...")
     blocks, block_map, roi_bbox = divide_roi_into_blocks(original_image, roi_mask)
 
     # Filter out blocks that have ZERO actual ROI pixels (background-only blocks
@@ -140,7 +140,7 @@ def run_encryption(
     filtered_map = []
     for blk, bm in zip(blocks, block_map):
         gx, gy = int(bm["position"][0]), int(bm["position"][1])
-        roi_patch = roi_mask[gy:gy + 8, gx:gx + 8]
+        roi_patch = roi_mask[gy:gy + 32, gx:gx + 32]
         if roi_patch.any():                       # at least 1 ROI pixel
             filtered_blocks.append(blk)
             filtered_map.append(bm)

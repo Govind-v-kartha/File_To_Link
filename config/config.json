@@ -32,7 +32,7 @@
         "batch_size": 1
     },
     "quantum_encryption": {
-        "block_size": 8,
+        "block_size": 32,
         "shots": 1024,
         "backend": "AerSimulator",
         "encoding": "NEQR"
