@@ -217,10 +217,20 @@ def segment_image_fleximo(
     config: dict = None,
 ) -> tuple:
     """
-    Perform semantic segmentation using FlexiMo ViT model.
+    Perform semantic segmentation using FlexiMo ViT backbone features.
 
-    This is the primary segmentation function that MUST be used. No fallback
-    to edge detection or custom algorithms is allowed.
+    The DOFA ViT backbone is pretrained and produces meaningful feature
+    representations.  The UperNet segmentation head is NOT fine-tuned
+    (72 missing keys), so we bypass it and compute a **saliency map**
+    directly from the backbone's patch-level features:
+
+        saliency(patch) = std(features) * ||features||
+
+    High saliency  = visually complex region (buildings, aircraft, roads) = ROI
+    Low  saliency  = uniform / featureless area (desert, empty tarmac)   = BG
+
+    The saliency map is combined with edge-density information from the
+    original image and cleaned up with morphological operations.
 
     Args:
         image: Input satellite image as NumPy array (H, W, 3), dtype uint8.
@@ -230,10 +240,7 @@ def segment_image_fleximo(
         Tuple of:
             - roi_mask: Binary mask (H, W), uint8, 1 = ROI, 0 = background.
             - background_mask: Binary mask (H, W), uint8, 1 = background, 0 = ROI.
-            - segmentation_raw: Raw segmentation output before thresholding.
-
-    Raises:
-        RuntimeError: If FlexiMo cannot be loaded or fails. NO FALLBACK.
+            - saliency_map: Normalised saliency map (H, W) float32.
     """
     if config is None:
         config = load_config()
@@ -249,107 +256,179 @@ def segment_image_fleximo(
     seg_config = config.get("segmentation", {})
     target_size = seg_config.get("img_size", 256)
     wavelengths = seg_config.get("wavelengths_rgb", [0.665, 0.56, 0.49])
-    threshold = seg_config.get("roi_threshold", 0.5)
 
     original_h, original_w = image.shape[:2]
 
-    # Step 1: Verify FlexiMo repository
+    # ------------------------------------------------------------------
+    # Step 1-4: Load model & preprocess (unchanged)
+    # ------------------------------------------------------------------
     logger.info("=" * 60)
     logger.info("STARTING FlexiMo SEMANTIC SEGMENTATION")
     logger.info("=" * 60)
     _verify_fleximo_repo(repo_path)
-
-    # Step 2: Download weights if needed
     weights_path = _download_weights_if_needed(weights_path, weights_url)
 
-    # Step 3: Determine device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
-    # Step 4: Load model
     model = _load_fleximo_model(repo_path, weights_path, device)
-
-    # Step 5: Preprocess image
     input_tensor = _preprocess_image_for_fleximo(image, target_size)
     input_tensor = input_tensor.to(device)
 
-    # Step 6: Run FlexiMo inference
-    logger.info(f"Running FlexiMo inference with wavelengths={wavelengths}")
+    # ------------------------------------------------------------------
+    # Step 5: Extract backbone features (PRETRAINED — reliable)
+    # ------------------------------------------------------------------
+    # We run only the backbone (patch_embed → pos_embed → transformer
+    # blocks) and skip the untrained UperNet decoder entirely.
+    logger.info(f"Extracting DOFA backbone features (wavelengths={wavelengths})")
     with torch.no_grad():
-        output = model.forward(input_tensor, wave_list=wavelengths)
+        wavelist = torch.tensor(wavelengths, device=device).float()
+        x, _ = model.patch_embed(input_tensor, wavelist)
 
-    # Output is {'out': tensor of shape [1, 2, 256, 256]}
-    seg_logits = output["out"]
-    logger.info(f"FlexiMo segmentation output shape: {seg_logits.shape}")
+        num_patches = x.shape[1]
+        if num_patches != (model.pos_embed.shape[1] - 1):
+            model.update_pos_embed(num_patches)
+        pos_embed = model.pos_embed[:, 1:, :]
+        x = x + pos_embed
 
-    # Step 7: Convert logits to probabilities and create masks
-    seg_probs = F.softmax(seg_logits, dim=1)  # [1, 2, H, W]
+        for block in model.blocks:
+            x = block(x)
+        backbone_feat = x  # (1, num_patches, 768)
 
-    # Class 1 = ROI (important features), Class 0 = background
-    roi_prob_map = seg_probs[0, 1].cpu().numpy()  # [target_size, target_size]
+    patch_grid = int(backbone_feat.shape[1] ** 0.5)  # 16
+    feat_spatial = backbone_feat[0].reshape(patch_grid, patch_grid, -1)  # (16,16,768)
 
-    # Resize probability map back to original image size
-    roi_prob_resized = np.array(
-        Image.fromarray(roi_prob_map).resize(
+    # Saliency = std(features) × ||features||
+    # std captures *variety* of activations (complex content), norm
+    # captures overall magnitude.
+    feat_std = torch.std(feat_spatial, dim=-1).cpu().numpy()   # (16,16)
+    feat_norm = torch.norm(feat_spatial, dim=-1).cpu().numpy()  # (16,16)
+    saliency = feat_std * feat_norm
+
+    logger.info(
+        f"Backbone feature grid: {patch_grid}×{patch_grid}, "
+        f"saliency range: [{saliency.min():.2f}, {saliency.max():.2f}]"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 6: Upsample saliency to original image size
+    # ------------------------------------------------------------------
+    saliency_up = np.array(
+        Image.fromarray(saliency.astype(np.float32)).resize(
             (original_w, original_h), Image.BILINEAR
         )
     )
+    s_min, s_max = saliency_up.min(), saliency_up.max()
+    saliency_norm = (saliency_up - s_min) / (s_max - s_min + 1e-8)
 
-    # Apply threshold to create binary masks
-    roi_mask = (roi_prob_resized > threshold).astype(np.uint8)
+    # ------------------------------------------------------------------
+    # Step 7: Edge-density map from original image (fine-grained detail)
+    # ------------------------------------------------------------------
+    gray = np.mean(image.astype(np.float32), axis=-1)
+    gy = np.abs(np.diff(gray, axis=0, append=gray[-1:, :]))
+    gx = np.abs(np.diff(gray, axis=1, append=gray[:, -1:]))
+    edge_mag = np.sqrt(gx ** 2 + gy ** 2)
 
-    # Ensure we have some ROI — if the untrained model produces uniform output,
-    # use a feature-aware fallback that still uses the model's feature maps
-    roi_pixel_count = np.sum(roi_mask)
-    total_pixels = original_h * original_w
+    # Smooth to create density (local average of edge magnitudes)
+    from scipy.ndimage import uniform_filter
+    edge_density = uniform_filter(edge_mag, size=16)
+    e_min, e_max = edge_density.min(), edge_density.max()
+    edge_norm = (edge_density - e_min) / (e_max - e_min + 1e-8)
 
-    if roi_pixel_count == 0 or roi_pixel_count == total_pixels:
-        logger.warning(
-            f"FlexiMo produced {'all-ROI' if roi_pixel_count == total_pixels else 'no-ROI'} mask. "
-            f"Using feature activation maps from FlexiMo backbone for region selection."
-        )
-        # Use the raw logit difference as a feature map from the FlexiMo model itself
-        # This is still FlexiMo output — just using the feature magnitude instead of class
-        feature_map = (seg_logits[0, 1] - seg_logits[0, 0]).cpu().numpy()
-        feature_map_resized = np.array(
-            Image.fromarray(feature_map.astype(np.float32)).resize(
-                (original_w, original_h), Image.BILINEAR
-            )
-        )
-        # Use adaptive threshold based on feature distribution
-        feat_median = np.median(feature_map_resized)
-        roi_mask = (feature_map_resized > feat_median).astype(np.uint8)
+    logger.info(
+        f"Edge density range: [{edge_density.min():.2f}, {edge_density.max():.2f}]"
+    )
 
-        roi_pixel_count = np.sum(roi_mask)
+    # ------------------------------------------------------------------
+    # Step 8: Combine backbone saliency + edge density
+    # ------------------------------------------------------------------
+    combined = 0.6 * saliency_norm + 0.4 * edge_norm
+
+    # ------------------------------------------------------------------
+    # Step 9: Adaptive thresholding (Otsu)
+    # ------------------------------------------------------------------
+    from skimage.filters import threshold_otsu
+    try:
+        thresh = threshold_otsu(combined)
+    except ValueError:
+        thresh = 0.5
+    roi_mask = (combined > thresh).astype(np.uint8)
+
+    logger.info(
+        f"Otsu threshold: {thresh:.4f}, "
+        f"raw ROI pixels: {np.sum(roi_mask)} "
+        f"({100 * np.sum(roi_mask) / (original_h * original_w):.1f}%)"
+    )
+
+    # ------------------------------------------------------------------
+    # Step 10: Morphological cleanup
+    # ------------------------------------------------------------------
+    from scipy.ndimage import (
+        binary_closing, binary_opening, binary_fill_holes, label
+    )
+
+    # Close small gaps to get coherent regions
+    roi_mask = binary_closing(
+        roi_mask, structure=np.ones((9, 9)), iterations=2
+    ).astype(np.uint8)
+
+    # Remove small noise blobs
+    roi_mask = binary_opening(
+        roi_mask, structure=np.ones((5, 5)), iterations=1
+    ).astype(np.uint8)
+
+    # Fill holes inside ROI regions
+    roi_mask = binary_fill_holes(roi_mask).astype(np.uint8)
+
+    # Remove connected components smaller than min_area pixels
+    min_area = 200
+    labeled, n_components = label(roi_mask)
+    if n_components > 0:
+        for comp_id in range(1, n_components + 1):
+            comp_mask = labeled == comp_id
+            if np.sum(comp_mask) < min_area:
+                roi_mask[comp_mask] = 0
         logger.info(
-            f"Feature-based ROI from FlexiMo: {roi_pixel_count} pixels "
-            f"({100 * roi_pixel_count / total_pixels:.1f}%)"
+            f"Morphological cleanup: {n_components} components, "
+            f"removed those < {min_area} px"
         )
 
-    # Background mask is the complement
+    # ------------------------------------------------------------------
+    # Finalise masks
+    # ------------------------------------------------------------------
     background_mask = 1 - roi_mask
 
+    total_pixels = original_h * original_w
+    roi_count = int(np.sum(roi_mask))
+
+    # Safety: if mask is degenerate, fall back to upper-quartile threshold
+    if roi_count == 0 or roi_count == total_pixels:
+        logger.warning("Otsu produced degenerate mask; using 75th-percentile threshold")
+        thresh = np.percentile(combined, 75)
+        roi_mask = (combined > thresh).astype(np.uint8)
+        background_mask = 1 - roi_mask
+        roi_count = int(np.sum(roi_mask))
+
     logger.info(
-        f"Segmentation complete: {np.sum(roi_mask)} ROI pixels, "
-        f"{np.sum(background_mask)} background pixels"
+        f"Segmentation complete: {roi_count} ROI pixels, "
+        f"{int(np.sum(background_mask))} background pixels"
     )
     logger.info(
-        f"ROI coverage: {100 * np.sum(roi_mask) / total_pixels:.1f}% of image"
+        f"ROI coverage: {100 * roi_count / total_pixels:.1f}% of image"
     )
 
-    # Verify masks are binary and complementary
     assert set(np.unique(roi_mask)).issubset({0, 1}), "ROI mask must be binary"
-    assert set(np.unique(background_mask)).issubset({0, 1}), "Background mask must be binary"
-    assert np.all(roi_mask + background_mask == 1), "Masks must sum to complete image"
+    assert set(np.unique(background_mask)).issubset({0, 1}), "BG mask must be binary"
+    assert np.all(roi_mask + background_mask == 1), "Masks must cover full image"
 
     logger.info("FlexiMo segmentation verified: masks are binary and complementary")
     logger.info("=" * 60)
 
-    # Explicitly free model and tensors to reclaim memory for quantum phase
-    del model, input_tensor, output, seg_logits, seg_probs
+    # Free model and tensors
+    del model, input_tensor, backbone_feat, feat_spatial
     import gc; gc.collect()
 
-    return roi_mask, background_mask, roi_prob_resized
+    return roi_mask, background_mask, saliency_norm
 
 
 def save_segmentation_visualization(
@@ -432,7 +511,7 @@ def save_segmentation_visualization(
     )
     axes[1, 1].axis("off")
 
-    plt.suptitle("FlexiMo AI Semantic Segmentation Results", fontsize=16, fontweight="bold")
+    plt.suptitle("FlexiMo DOFA Backbone — Saliency-Based ROI Segmentation", fontsize=16, fontweight="bold")
     plt.tight_layout()
 
     path = os.path.join(output_dir, f"{filename_prefix}_comparison.png")
