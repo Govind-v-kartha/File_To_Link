@@ -13,12 +13,6 @@ build/
 venv/
 env/
 
-# Model weights (too large for GitHub, download separately)
-*.pth
-*.pt
-*.h5
-*.onnx
-
 # Output files (generated at runtime)
 output/encrypted/
 output/decrypted/
@@ -29,12 +23,6 @@ output/analysis/
 logs/
 *.log
 full_run.log
-
-# Input images (add your own)
-input/
-
-# External repositories (cloned at setup)
-repos/
 
 # IDE
 .vscode/

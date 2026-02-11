@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qiskit cache
+.qiskit/
+
+
+# Data (optional)
+data/*.jpg
+data/*.png
+
+# Logs
+*.log
