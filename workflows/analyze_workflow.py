@@ -12,6 +12,7 @@ from datetime import datetime
 
 from utils.logger import setup_logger, get_config_path, load_config
 from utils.image_utils import load_image, get_image_info
+from utils.block_utils import BLOCK_SIZE
 from engines.ai_engine import segment_image_fleximo, save_segmentation_visualization
 from engines.decision_engine import divide_roi_into_blocks, get_block_statistics
 
@@ -73,7 +74,7 @@ def run_analysis(
     block_stats = get_block_statistics(block_map)
 
     # Estimate encryption time
-    shots = config.get("quantum_encryption", {}).get("shots", 1024)
+    shots = config.get("quantum_encryption", {}).get("shots", 16384)
     est_time_per_block = 25.0  # seconds (typical for NEQR on 32x32)
     est_total_time = block_stats["total_blocks"] * est_time_per_block
 
@@ -87,9 +88,10 @@ def run_analysis(
     logger.info(f"Total pixels: {image.shape[0] * image.shape[1]}")
     logger.info(f"ROI pixels: {np.sum(roi_mask)} ({100 * np.sum(roi_mask) / (image.shape[0] * image.shape[1]):.1f}%)")
     logger.info(f"Background pixels: {np.sum(background_mask)}")
-    logger.info(f"Total 8x8 blocks: {block_stats['total_blocks']}")
+    logger.info(f"Total {BLOCK_SIZE}x{BLOCK_SIZE} blocks: {block_stats['total_blocks']}")
     logger.info(f"  Full blocks: {block_stats['full_blocks']}")
     logger.info(f"  Padded blocks: {block_stats['padded_blocks']}")
+    logger.info(f"Block configuration: {BLOCK_SIZE}x{BLOCK_SIZE} pixels, {shots} shots per block")
     logger.info(f"ROI bounding box: {roi_bbox.tolist()}")
     logger.info(f"Estimated encryption time: {est_total_time / 60:.1f} minutes (shots={shots})")
     logger.info(f"Analysis time: {elapsed:.2f}s")
