@@ -23,13 +23,14 @@ from utils.config_loader_secure import load_config_secure
 from utils.image_utils import load_image, save_image, read_png_metadata, verify_png_dependencies
 from utils.crypto_utils import load_key_material, derive_quantum_seeds, derive_all_block_seeds, decode_bytes_b64
 from utils.crypto_utils_pqc import (
-    secure_key_import, 
+    secure_key_import,
     load_pqc_keys_from_file,
     verify_bundle,
     load_signature_file,
     load_dilithium_public_key,
     load_protected_keys
 )
+from utils.bench import measure
 from utils.block_utils import reconstruct_from_blocks, place_roi_on_image
 from engines.classical_engine import decrypt_background
 from engines.quantum_engine import decrypt_all_blocks
@@ -83,9 +84,13 @@ def run_decryption(
     logger.info("\n>>> SECURITY GATE: Verifying metadata bundle signature (ML-DSA/Dilithium3)...")
     
     # Construct expected .sig file path
+    # Encryption saves as "{image_basename}_bundle.sig" while metadata is
+    # "{image_basename}_metadata.json" — strip the _metadata suffix so the
+    # signature filename matches what the encrypt step wrote.
     metadata_dir = os.path.dirname(metadata_path)
     metadata_basename = os.path.splitext(os.path.basename(metadata_path))[0]
-    sig_path = os.path.join(metadata_dir, f"{metadata_basename}_bundle.sig")
+    image_basename = metadata_basename[:-len("_metadata")] if metadata_basename.endswith("_metadata") else metadata_basename
+    sig_path = os.path.join(metadata_dir, f"{image_basename}_bundle.sig")
     
     signature_verified = False
     if os.path.exists(sig_path):
@@ -110,7 +115,12 @@ def run_decryption(
             logger.error(f"❌ SECURITY GATE FAILED: {e}")
             raise RuntimeError(f"Metadata verification failed - Cannot proceed with decryption: {e}")
     else:
-        logger.warning(f"⚠️  Signature file not found: {sig_path} - Proceeding without verification (INSECURE)")
+        logger.critical(f"🚨 SECURITY GATE FAILED: Signature file not found: {sig_path}")
+        logger.critical("    A signed metadata bundle is required for decryption.")
+        raise RuntimeError(
+            f"Metadata signature file not found: {sig_path}. "
+            f"Cannot proceed with decryption without an authenticated bundle."
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # STEP 1: Load Metadata and Encrypted Data
@@ -171,10 +181,14 @@ def run_decryption(
             )
             logger.info("✅ Master seed recovered from ML-KEM (Kyber768) - Zero knowledge key transport")
             
-            # Derive remaining keys from master_seed
+            # Derive remaining keys from master_seed using the salt stored
+            # alongside the ML-KEM wrapped seed during encryption.
             from utils.crypto_utils import derive_aes_key
-            salt = decode_bytes_b64(enc_meta.get("salt_b64", ""))  # May be stored in metadata
-            aes_key = derive_aes_key(master_seed, salt) if salt else None
+            salt_hex = pqc_keys.get("aes_salt")
+            if not salt_hex:
+                raise RuntimeError("post_quantum.aes_salt missing from metadata — re-encrypt with current code")
+            salt = bytes.fromhex(salt_hex)
+            aes_key = derive_aes_key(master_seed, salt)
         except Exception as e:
             logger.error(f"❌ ML-KEM key recovery failed: {e}")
             raise RuntimeError(f"Post-quantum key recovery failed: {e}")
@@ -261,7 +275,8 @@ def run_decryption(
     expected_enc_file_hash = classical_info.get("enc_file_hash")
     
     if expected_enc_file_hash:
-        computed_hash = hashlib.sha256(ciphertext).hexdigest()
+        with measure("SHA-256 hash (1 MB)"):
+            computed_hash = hashlib.sha256(ciphertext).hexdigest()
         if computed_hash == expected_enc_file_hash:
             logger.info(f"✅ ⚡ FIX #6-ENHANCEMENT: Encrypted background file integrity verified (SHA-256 hash match)")
         else:

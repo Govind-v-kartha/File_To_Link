@@ -39,7 +39,7 @@ from utils.crypto_utils import (
     save_key_material,
 )
 from utils.crypto_utils_pqc import (
-    secure_key_export, 
+    secure_key_export,
     save_pqc_keys_to_file,
     sign_bundle,
     save_signature_file,
@@ -47,6 +47,7 @@ from utils.crypto_utils_pqc import (
     protect_keys,
     save_protected_keys
 )
+from utils.bench import measure
 from engines.ai_engine import segment_image_fleximo, save_segmentation_visualization
 from engines.decision_engine import divide_roi_into_blocks, get_block_statistics
 from engines.quantum_engine import encrypt_all_blocks
@@ -275,7 +276,8 @@ def run_encryption(
     # ⚡ FIX #6-ENHANCEMENT: Compute SHA-256 hash of .enc file for integrity verification
     # This hash will be included in the signed metadata, so tampering with the .enc file
     # will break the signature verification (transitively covering the .enc file)
-    enc_file_hash = hashlib.sha256(ciphertext).hexdigest()
+    with measure("SHA-256 hash (1 MB)"):
+        enc_file_hash = hashlib.sha256(ciphertext).hexdigest()
     classical_enc_info["enc_file_hash"] = enc_file_hash
     classical_enc_info["enc_file_hash_algorithm"] = "SHA-256"
     logger.info(f"⚡ FIX #6-ENHANCEMENT: Computed SHA-256 hash of encrypted background: {enc_file_hash[:16]}...")
@@ -431,6 +433,9 @@ def run_encryption(
                 recipient_public_key = f.read()
             
             wrapped_keys = secure_key_export(master_seed, recipient_public_key)
+            # Store the AES-derivation salt alongside the wrapped seed so the
+            # ML-KEM decrypt branch can re-derive the same aes_key.
+            wrapped_keys["aes_salt"] = salt.hex()
             metadata["encryption_metadata"]["post_quantum"] = wrapped_keys
             save_pqc_keys_to_file(wrapped_keys, key_path)
             logger.info("✅ Keys protected with ML-KEM (Kyber768) - Zero knowledge key transport")
@@ -455,24 +460,14 @@ def run_encryption(
         try:
             sender_private_key = load_dilithium_private_key(sender_private_key_path)
             
-            # Sign the metadata bundle
+            # Sign the metadata bundle. AFTER this call, metadata_path on
+            # disk MUST NOT be modified — any change invalidates the signature.
             signature_hex = sign_bundle(metadata_path, sender_private_key)
-            
-            # Save signature to .sig file
+
+            # Save signature to .sig file (detached signature)
             sig_path = os.path.join(metadata_dir, f"{image_basename}_bundle.sig")
             save_signature_file(signature_hex, sig_path)
-            
-            # Store signature hash in metadata for reference
-            metadata["encryption_metadata"]["bundle_signature"] = {
-                "algorithm": "Dilithium3 (ML-DSA NIST-approved)",
-                "signature_file": sig_path,
-                "signature_hash": __import__("hashlib").sha256(bytes.fromhex(signature_hex)).hexdigest()[:16] + "..."
-            }
-            
-            # Update metadata with signature info
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2, default=str)
-            
+
             logger.info("✅ Metadata bundle signed with ML-DSA (Dilithium3) - Integrity & Authenticity verified")
             sig_file = sig_path
         except Exception as e:

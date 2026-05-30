@@ -29,6 +29,10 @@ import argparse
 import json
 from datetime import datetime
 
+# Enable PQC operation timing BEFORE importing any instrumented module.
+# utils/bench.py reads BENCH_PQC at import time.
+os.environ.setdefault("BENCH_PQC", "1")
+
 # Set up project root
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -42,6 +46,69 @@ if __name__ != "__mp_main__":
     from utils.config_loader_secure import load_config_secure
     from utils.security_manager import verify_all_permissions
     logger = setup_logger("MAIN", os.path.join(PROJECT_ROOT, "config", "config.json"))
+
+
+def _emit_pqc_benchmark() -> None:
+    """Flush PQC timings recorded during the run and print/save summary.
+
+    Outputs three files at project root:
+      benchmark_results.jsonl  raw per-call timings (appends across runs)
+      benchmark_summary.txt    aggregate across all runs accumulated so far
+      benchmark_results.tex    LaTeX rows ready to paste into ch5.tex Table 5.7
+    """
+    from utils.bench import flush, aggregate, emit_latex, TABLE_ORDER, is_enabled
+    if not is_enabled():
+        return
+
+    jsonl = os.path.join(PROJECT_ROOT, "benchmark_results.jsonl")
+    tex = os.path.join(PROJECT_ROOT, "benchmark_results.tex")
+    summary_path = os.path.join(PROJECT_ROOT, "benchmark_summary.txt")
+
+    flush(jsonl, run_label=datetime.now().strftime("run_%Y%m%d_%H%M%S"))
+    if not os.path.exists(jsonl):
+        return
+
+    summary = aggregate(jsonl)
+    if not summary:
+        return
+    emit_latex(summary, tex)
+
+    # Determine number of distinct runs from the JSONL file
+    n_runs = 0
+    seen = set()
+    with open(jsonl, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                seen.add(json.loads(line)["run"])
+            except Exception:
+                pass
+    n_runs = len(seen)
+
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"PQC OPERATION TIMINGS  ({n_runs} run(s) accumulated)")
+    lines.append("=" * 70)
+    lines.append(f"{'Operation':<28s} {'n':>4s} {'mean (ms)':>12s} {'std (ms)':>10s}")
+    lines.append("-" * 70)
+    total_mean = 0.0
+    for op in TABLE_ORDER:
+        if op not in summary:
+            continue
+        s = summary[op]
+        total_mean += s["mean_ms"]
+        lines.append(f"{op:<28s} {s['n']:>4d} {s['mean_ms']:>12.2f} {s['std_ms']:>10.2f}")
+    lines.append("-" * 70)
+    lines.append(f"{'Total PQC overhead':<28s} {'':>4s} {total_mean:>12.1f}")
+    lines.append("")
+    lines.append(f"  Raw timings → {jsonl}")
+    lines.append(f"  LaTeX rows  → {tex}  (paste into ch5.tex Table 5.7)")
+    if n_runs < 5:
+        lines.append(f"  Note: std meaningful with n>=2; thesis table claims n=5.")
+        lines.append(f"        Run main.py {5 - n_runs} more time(s) to reach n=5.")
+    text = "\n".join(lines)
+    print("\n" + text)
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
 
 
 def verify_dependencies() -> bool:
@@ -193,6 +260,7 @@ def mode_encrypt(args):
     logger.info(f"  Keys: {result['key_path']}")
     logger.info(f"  Time: {result['total_time_seconds']:.1f}s")
     logger.info("=" * 70)
+    _emit_pqc_benchmark()
 
 
 def mode_decrypt(args):
@@ -244,6 +312,7 @@ def mode_decrypt(args):
         logger.info(f"  SSIM: {report['ssim']}")
     logger.info(f"  Time: {result['total_time_seconds']:.1f}s")
     logger.info("=" * 70)
+    _emit_pqc_benchmark()
 
 
 def mode_analyze(args):
@@ -440,6 +509,8 @@ def mode_full_pipeline(args):
     else:
         print("║  ❌  DATA LOSS DETECTED — See verification report           ║")
     print("╚" + "═" * 68 + "╝")
+
+    _emit_pqc_benchmark()
 
 
 def main():

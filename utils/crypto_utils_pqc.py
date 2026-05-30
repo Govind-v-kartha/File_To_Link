@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 from utils.logger import setup_logger, get_config_path
+from utils.bench import measure
 
 logger = setup_logger("CRYPTO_PQC", get_config_path())
 
@@ -62,8 +63,9 @@ def generate_kyber_keypair() -> Tuple[bytes, bytes]:
     
     logger.info("🔐 Generating ML-KEM (Kyber768) keypair...")
     
-    with oqs.KeyEncapsulation("Kyber768") as kem:
-        public_key = kem.generate_keypair()
+    with oqs.KeyEncapsulation("ML-KEM-768") as kem:
+        with measure("ML-KEM key generation"):
+            public_key = kem.generate_keypair()
         # kem.export_secret_key() returns the private key
         # Note: liboqs-python handles key generation internally
     
@@ -101,8 +103,9 @@ def secure_key_export(master_seed: bytes, recipient_public_key: bytes) -> Dict[s
     logger.info("🔐 Performing ML-KEM key encapsulation (Kyber768)...")
     
     try:
-        with oqs.KeyEncapsulation("Kyber768") as kem:
-            kem_ciphertext, shared_secret = kem.encap_secret(recipient_public_key)
+        with oqs.KeyEncapsulation("ML-KEM-768") as kem:
+            with measure("ML-KEM encapsulation"):
+                kem_ciphertext, shared_secret = kem.encap_secret(recipient_public_key)
     except Exception as e:
         logger.error(f"❌ ML-KEM encapsulation failed: {e}")
         raise RuntimeError(f"ML-KEM encapsulation failed: {e}")
@@ -161,11 +164,10 @@ def secure_key_import(kem_ciphertext: str, wrapped_seed: str, wrap_nonce: str,
     
     try:
         # Step 1: Decapsulate with private key to recover shared secret
-        with oqs.KeyEncapsulation("Kyber768") as kem:
-            shared_secret = kem.decap_secret(
-                bytes.fromhex(kem_ciphertext),
-                recipient_private_key
-            )
+        # liboqs-python 0.14+: secret_key is passed to constructor, not decap_secret
+        with oqs.KeyEncapsulation("ML-KEM-768", secret_key=recipient_private_key) as kem:
+            with measure("ML-KEM decapsulation"):
+                shared_secret = kem.decap_secret(bytes.fromhex(kem_ciphertext))
     except Exception as e:
         logger.error(f"❌ ML-KEM decapsulation failed: {e}")
         raise RuntimeError(f"ML-KEM decapsulation failed: {e}")
@@ -270,9 +272,10 @@ def generate_dilithium_keypair() -> Tuple[bytes, bytes]:
     logger.info("🔐 Generating ML-DSA (Dilithium3) keypair...")
     
     try:
-        with oqs.Signature("Dilithium3") as sig:
-            public_key = sig.generate_keypair()
-            private_key = sig.export_secret_key()
+        with oqs.Signature("ML-DSA-65") as sig:
+            with measure("ML-DSA key generation"):
+                public_key = sig.generate_keypair()
+                private_key = sig.export_secret_key()
     except Exception as e:
         logger.error(f"❌ ML-DSA keypair generation failed: {e}")
         raise RuntimeError(f"ML-DSA keypair generation failed: {e}")
@@ -313,8 +316,10 @@ def sign_bundle(metadata_path: str, sender_private_key: bytes) -> str:
             content = f.read()
         
         # Sign with Dilithium3
-        with oqs.Signature("Dilithium3") as signer:
-            signature = signer.sign(content, sender_private_key)
+        # liboqs-python 0.14+: secret_key is passed to constructor, not sign()
+        with oqs.Signature("ML-DSA-65", secret_key=sender_private_key) as signer:
+            with measure("ML-DSA signing"):
+                signature = signer.sign(content)
         
         signature_hex = signature.hex()
         logger.info(f"✅ Metadata signed with ML-DSA (Dilithium3): signature={len(signature)} bytes")
@@ -358,12 +363,13 @@ def verify_bundle(metadata_path: str, signature_hex: str, sender_public_key: byt
             content = f.read()
         
         # Verify with Dilithium3
-        with oqs.Signature("Dilithium3") as verifier:
-            is_valid = verifier.verify(
-                content,
-                bytes.fromhex(signature_hex),
-                sender_public_key
-            )
+        with oqs.Signature("ML-DSA-65") as verifier:
+            with measure("ML-DSA verification"):
+                is_valid = verifier.verify(
+                    content,
+                    bytes.fromhex(signature_hex),
+                    sender_public_key
+                )
         
         if is_valid:
             logger.info("✅ Metadata signature verified (ML-DSA Dilithium3)")
@@ -526,7 +532,8 @@ def protect_keys(keys: dict, passphrase: str) -> bytes:
             r=8,        # Block size
             p=1         # Parallelization
         )
-        kek = kdf.derive(passphrase.encode('utf-8'))
+        with measure("Scrypt derivation"):
+            kek = kdf.derive(passphrase.encode('utf-8'))
         
         # Step 3: Serialize keys to JSON
         plaintext = json.dumps(keys).encode('utf-8')
@@ -595,7 +602,8 @@ def unprotect_keys(encrypted_blob: bytes, passphrase: str) -> dict:
             r=8,
             p=1
         )
-        kek = kdf.derive(passphrase.encode('utf-8'))
+        with measure("Scrypt derivation"):
+            kek = kdf.derive(passphrase.encode('utf-8'))
         
         # Step 3: Decrypt with AES-256-GCM using KEK
         aesgcm = AESGCM(kek)
